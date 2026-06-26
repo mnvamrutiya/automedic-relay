@@ -17,14 +17,14 @@ state_lock       = threading.Lock()
 cached_status    = {}
 pending_override = None
 
+# ── shared frame state (defined ONCE) ───────────────────────────────────
+latest_frame = None
+frame_lock   = threading.Lock()
 
+# ═══ MJPEG push / pull ══════════════════════════════════════════════════
 def require_push_auth():
     if request.headers.get("X-Push-Secret", "") != PUSH_SECRET:
         abort(403, "Bad push secret")
-
-# ═══ MJPEG frame: Jetson pushes, dashboard pulls ════════════════════════
-latest_frame = None
-frame_lock = threading.Lock()
 
 @app.route("/api/push_frame", methods=["POST"])
 def push_frame():
@@ -45,7 +45,8 @@ def stream():
             time.sleep(0.05)
     return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame",
                     headers={"Access-Control-Allow-Origin": "*"})
-    
+
+# ═══ HLS segments ═══════════════════════════════════════════════════════
 @app.route("/hls/<filename>", methods=["PUT"])
 def hls_put(filename):
     require_push_auth()
@@ -61,7 +62,6 @@ def hls_put(filename):
             except Exception:
                 pass
     return "", 204
-
 
 @app.route("/hls/<filename>", methods=["GET"])
 def hls_get(filename):
@@ -81,7 +81,7 @@ def hls_get(filename):
         headers={"Cache-Control": "no-cache, no-store", "Access-Control-Allow-Origin": "*"},
     )
 
-
+# ═══ Status / override ══════════════════════════════════════════════════
 @app.route("/api/push_status", methods=["POST"])
 def push_status():
     require_push_auth()
@@ -90,7 +90,6 @@ def push_status():
         cached_status.update(request.get_json(force=True) or {})
         cached_status["_relay_ts"] = time.time()
     return "", 204
-
 
 @app.route("/api/status", methods=["GET"])
 def api_status():
@@ -103,7 +102,6 @@ def api_status():
                          "alerts": 0, "rover_state": "WAITING FOR JETSON"}
     return jsonify(data)
 
-
 @app.route("/api/override", methods=["POST"])
 def api_override():
     global pending_override
@@ -115,7 +113,6 @@ def api_override():
         }
     return jsonify({"ok": True, "queued": True})
 
-
 @app.route("/api/override/poll", methods=["GET"])
 def override_poll():
     require_push_auth()
@@ -125,35 +122,12 @@ def override_poll():
         pending_override = None
     return jsonify(cmd or {"active": False, "command": None})
 
-latest_frame = None
-frame_lock = threading.Lock()
-
-@app.route("/api/push_frame", methods=["POST"])
-def push_frame():
-    require_push_auth()
-    global latest_frame
-    with frame_lock:
-        latest_frame = request.get_data()
-    return "", 204
-
-@app.route("/stream")
-def stream():
-    def generate():
-        while True:
-            with frame_lock:
-                frame = latest_frame
-            if frame:
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
-            time.sleep(0.05)
-    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame",
-                    headers={"Access-Control-Allow-Origin": "*"})
-
+# ═══ Utility ════════════════════════════════════════════════════════════
 @app.route("/health")
 def health():
     segs = len(list(HLS_STORE.glob("*.ts")))
     age = time.time() - cached_status.get("_relay_ts", 0) if cached_status.get("_relay_ts") else None
     return jsonify({"ok": True, "hls_segments": segs, "status_age_sec": age})
-
 
 @app.route("/")
 def index():
