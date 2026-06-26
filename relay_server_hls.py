@@ -22,7 +22,30 @@ def require_push_auth():
     if request.headers.get("X-Push-Secret", "") != PUSH_SECRET:
         abort(403, "Bad push secret")
 
+# ═══ MJPEG frame: Jetson pushes, dashboard pulls ════════════════════════
+latest_frame = None
+frame_lock = threading.Lock()
 
+@app.route("/api/push_frame", methods=["POST"])
+def push_frame():
+    require_push_auth()
+    global latest_frame
+    with frame_lock:
+        latest_frame = request.get_data()
+    return "", 204
+
+@app.route("/stream")
+def stream():
+    def generate():
+        while True:
+            with frame_lock:
+                frame = latest_frame
+            if frame:
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+            time.sleep(0.05)
+    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame",
+                    headers={"Access-Control-Allow-Origin": "*"})
+    
 @app.route("/hls/<filename>", methods=["PUT"])
 def hls_put(filename):
     require_push_auth()
